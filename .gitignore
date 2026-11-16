@@ -1,0 +1,33 @@
+# Build outputs & dependencies
+target/
+**/target/
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+release-assets/
+app-ui/src-tauri/gen/
+
+# Strict block on extra markdown docs, agent plans, and scratchpads
+docs/
+PLAN.md
+AGENTS.md
+ARCHITECTURE.md
+CHANGELOG.md
+CONTRIBUTING.md
+.agent/
+.agents/
+scratch/
+tmp/
+
+# USB captures & raw test frames
+*.pcap
+*.pcapng
+test_frames/
+*.jpg
+*.jpeg
+*.raw
+
+# OS & logs
+.DS_Store
+*.log

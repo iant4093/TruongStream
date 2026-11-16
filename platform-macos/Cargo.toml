@@ -1,0 +1,20 @@
+[package]
+name = "truongstream-macos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "macOS VideoToolbox, Metal 3D LUT compute pipeline, IOSurface, and CMIOExtension bridge"
+
+[dependencies]
+truongstream-core = { path = "../core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+image.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

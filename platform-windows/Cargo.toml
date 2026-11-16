@@ -1,0 +1,17 @@
+[package]
+name = "truongstream-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Windows WPD PTP transport, D3D11/HLSL 3D LUT pipeline, and Media Foundation virtual camera bridge"
+
+[dependencies]
+truongstream-core = { path = "../core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+image.workspace = true

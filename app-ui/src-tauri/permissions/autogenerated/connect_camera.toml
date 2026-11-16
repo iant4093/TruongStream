@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-connect-camera"
+description = "Enables the connect_camera command without any pre-configured scope."
+commands.allow = ["connect_camera"]
+
+[[permission]]
+identifier = "deny-connect-camera"
+description = "Denies the connect_camera command without any pre-configured scope."
+commands.deny = ["connect_camera"]

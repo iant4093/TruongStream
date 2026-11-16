@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-activate-camera-extension"
+description = "Enables the activate_camera_extension command without any pre-configured scope."
+commands.allow = ["activate_camera_extension"]
+
+[[permission]]
+identifier = "deny-activate-camera-extension"
+description = "Denies the activate_camera_extension command without any pre-configured scope."
+commands.deny = ["activate_camera_extension"]

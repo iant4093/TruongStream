@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-camera-property"
+description = "Enables the set_camera_property command without any pre-configured scope."
+commands.allow = ["set_camera_property"]
+
+[[permission]]
+identifier = "deny-set-camera-property"
+description = "Denies the set_camera_property command without any pre-configured scope."
+commands.deny = ["set_camera_property"]

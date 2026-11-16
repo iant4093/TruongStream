@@ -1,0 +1,24 @@
+[package]
+name = "truongstream-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Platform-agnostic USB PTP engine, camera drivers, 3D LUT parser, and lock-free mailbox ring buffer"
+
+[dependencies]
+rusb.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+bytemuck.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+ctrlc.workspace = true
+tracing-subscriber.workspace = true

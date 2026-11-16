@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-lut-config"
+description = "Enables the set_lut_config command without any pre-configured scope."
+commands.allow = ["set_lut_config"]
+
+[[permission]]
+identifier = "deny-set-lut-config"
+description = "Denies the set_lut_config command without any pre-configured scope."
+commands.deny = ["set_lut_config"]

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TruongStream",
+  "version": "1.0.0",
+  "identifier": "com.iantruong.truongstream",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "TruongStream",
+        "url": "index.html",
+        "width": 1320,
+        "height": 840,
+        "minWidth": 1000,
+        "minHeight": 640,
+        "decorations": false,
+        "transparent": true,
+        "shadow": true,
+        "center": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Video",
+    "shortDescription": "Zero-configuration low-latency USB camera webcam & GPU 3D LUT utility",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "signingIdentity": "-",
+      "entitlements": "./Entitlements.plist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE3OUI4MTM0QTBGREM4NTEKUldSUnlQMmdOSUdiRi94K0dMYlhlQTBuUjJaRzNiSzV6Vk5PbzFlVEFkZ2wrRy9ncFRnaGRTQ2gK",
+      "endpoints": [
+        "https://github.com/iant4093/TruongStream/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

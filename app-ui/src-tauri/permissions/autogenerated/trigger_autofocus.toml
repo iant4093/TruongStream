@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-trigger-autofocus"
+description = "Enables the trigger_autofocus command without any pre-configured scope."
+commands.allow = ["trigger_autofocus"]
+
+[[permission]]
+identifier = "deny-trigger-autofocus"
+description = "Denies the trigger_autofocus command without any pre-configured scope."
+commands.deny = ["trigger_autofocus"]

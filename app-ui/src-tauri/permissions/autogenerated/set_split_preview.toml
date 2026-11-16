@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-split-preview"
+description = "Enables the set_split_preview command without any pre-configured scope."
+commands.allow = ["set_split_preview"]
+
+[[permission]]
+identifier = "deny-set-split-preview"
+description = "Denies the set_split_preview command without any pre-configured scope."
+commands.deny = ["set_split_preview"]
