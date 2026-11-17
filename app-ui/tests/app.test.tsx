@@ -298,10 +298,18 @@ describe('TruongStream Studio UI', () => {
     });
 
     const currentCaps = useStreamStore.getState().capabilities;
+    const currentTelemetry = useStreamStore.getState().telemetry;
     expect(currentCaps).toBeTruthy();
 
     await act(async () => {
       useStreamStore.setState({
+        pollFrame: async () => {},
+        telemetry: currentTelemetry
+          ? {
+              ...currentTelemetry,
+              streaming: false,
+            }
+          : null,
         capabilities: currentCaps
           ? {
               ...currentCaps,
