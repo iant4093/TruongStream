@@ -1,7 +1,11 @@
+#[cfg(target_os = "macos")]
 use std::ffi::{CStr, CString};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Once};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "macos")]
+use std::time::Instant;
+#[cfg(unix)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, warn};

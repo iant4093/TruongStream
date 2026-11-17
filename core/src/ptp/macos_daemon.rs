@@ -4,8 +4,10 @@
 //! PTP/MTP camera over USB, causing `claim_interface` to fail with `Busy` or `Access`.
 //! We inspect and cleanly release only when an actual claim conflict occurs.
 
+#[cfg(target_os = "macos")]
 use tracing::{info, warn};
 
+#[cfg(target_os = "macos")]
 const COMPETING_PROCESSES: &[&str] = &["ptpcamerad", "mscamerad-xpc", "PTPCamera"];
 
 /// Returns names of known macOS PTP/camera daemons currently running on the system.

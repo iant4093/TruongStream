@@ -6,6 +6,7 @@
 #include <objbase.h>
 #include <PortableDeviceApi.h>
 #include <PortableDevice.h>
+#include <WpdMtpExtensions.h>
 #include <wrl/client.h>
 #include <cstdint>
 #include <string>
