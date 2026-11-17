@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, RunEvent, State};
 use tracing::info;
 use truongstream_core::drivers::{
-    discover_usb_cameras, open_usb_driver, CameraCapabilities, CameraPropertyId,
-    CameraSessionWorker, DiscoveredCamera, LiveViewFrame,
+    discover_usb_cameras, open_usb_driver, CameraBrand, CameraCapabilities, CameraPropertyId,
+    CameraSessionWorker, DiscoveredCamera, FramePixelFormat, LiveViewFrame,
 };
 use truongstream_core::lut::{
     BuiltinLutPreset, CubeLut, LutRenderSettings, LutSummary, VirtualCamStatus,
@@ -65,6 +65,8 @@ pub struct PipelineTelemetry {
     pub connected: bool,
     pub streaming: bool,
     pub camera_id: Option<String>,
+    pub hdmi_input_id: Option<String>,
+    pub source_format: String,
     pub width: u32,
     pub height: u32,
     pub source_width: u32,
@@ -123,6 +125,8 @@ pub struct AppState {
     session: Mutex<Option<CameraSessionWorker>>,
     ring_buffer: Mutex<Option<Arc<MailboxRingBuffer<LiveViewFrame>>>>,
     camera_id: Mutex<Option<String>>,
+    hdmi_input_id: RwLock<Option<String>>,
+    last_source_format: Mutex<String>,
     gpu_pipeline: PlatformGpuPipeline,
     virtual_cam: PlatformVirtualCamSink,
     system_config: RwLock<SystemConfig>,
@@ -165,6 +169,8 @@ impl Default for AppState {
             session: Mutex::new(None),
             ring_buffer: Mutex::new(None),
             camera_id: Mutex::new(None),
+            hdmi_input_id: RwLock::new(None),
+            last_source_format: Mutex::new(String::from("USB PTP MJPEG")),
             gpu_pipeline,
             virtual_cam: PlatformVirtualCamSink::new(),
             system_config: RwLock::new(cfg),
@@ -192,6 +198,8 @@ impl AppState {
         }
         *self.ring_buffer.lock() = None;
         *self.camera_id.lock() = None;
+        *self.hdmi_input_id.write() = None;
+        *self.last_source_format.lock() = String::from("USB PTP MJPEG");
         self.latest_jpeg.write().clear();
         self.fps_meter.lock().reset();
     }
@@ -211,6 +219,12 @@ impl AppState {
         *self.last_dims.lock() = (sink_w, sink_h);
         if let Some(worker) = self.session.lock().as_ref() {
             worker.set_fps_cap(cfg.fps_cap);
+            let hdmi_id = self.hdmi_input_id.read().clone();
+            if hdmi_id.is_some() || worker.capabilities().brand == CameraBrand::Hdmi {
+                let cap_w = if target_w > 0 { target_w } else { 3840 };
+                let cap_h = if target_h > 0 { target_h } else { 2160 };
+                let _ = worker.set_hdmi_override(hdmi_id, cap_w, cap_h, cfg.fps_cap);
+            }
             self.virtual_cam.start(sink_w, sink_h, cfg.fps_cap);
         }
     }
@@ -247,7 +261,14 @@ async fn connect_camera(
 
         *app.session.lock() = Some(worker);
         *app.ring_buffer.lock() = Some(ring);
-        *app.camera_id.lock() = Some(camera_id);
+        *app.camera_id.lock() = Some(camera_id.clone());
+        if caps.brand == CameraBrand::Hdmi {
+            *app.hdmi_input_id.write() = Some(camera_id);
+            *app.last_source_format.lock() = String::from("Uncompressed HDMI");
+        } else {
+            *app.hdmi_input_id.write() = None;
+            *app.last_source_format.lock() = String::from("USB PTP MJPEG");
+        }
 
         let cfg = app.system_config.read().clone();
         app.apply_resolution_to_sink(&cfg);
@@ -330,8 +351,15 @@ async fn get_latest_frame(state: State<'_, Arc<AppState>>) -> Result<Option<Fram
         let need_nv12 = app.virtual_cam.consumer_count() > 0;
         let processed = app
             .gpu_pipeline
-            .process_frame(&frame.jpeg_bytes, need_nv12)
+            .process_live_frame(&frame, need_nv12)
             .map_err(|e| e.to_string())?;
+
+        *app.last_source_format.lock() =
+            String::from(if frame.pixel_format == FramePixelFormat::Jpeg {
+                "USB PTP MJPEG"
+            } else {
+                "Uncompressed HDMI"
+            });
 
         app.virtual_cam.publish_surface(
             processed.iosurface_id,
@@ -369,8 +397,8 @@ async fn get_latest_frame(state: State<'_, Arc<AppState>>) -> Result<Option<Fram
         let ungraded_data_url = if app.split_preview.load(Ordering::Relaxed) {
             let ungraded_bytes = app
                 .gpu_pipeline
-                .process_ungraded_preview(&frame.jpeg_bytes)
-                .unwrap_or_else(|_| frame.jpeg_bytes.clone());
+                .process_ungraded_live_preview(&frame)
+                .unwrap_or_else(|_| preview_bytes.to_vec());
             Some(format!(
                 "data:image/jpeg;base64,{}",
                 B64.encode(&ungraded_bytes)
@@ -534,6 +562,8 @@ fn get_telemetry(state: State<'_, Arc<AppState>>) -> PipelineTelemetry {
         connected,
         streaming,
         camera_id: state.camera_id.lock().clone(),
+        hdmi_input_id: state.hdmi_input_id.read().clone(),
+        source_format: state.last_source_format.lock().clone(),
         width,
         height,
         source_width,
@@ -551,6 +581,41 @@ fn get_telemetry(state: State<'_, Arc<AppState>>) -> PipelineTelemetry {
         system_config: state.system_config.read().clone(),
         active_lut: state.active_lut_summary.read().clone(),
     }
+}
+
+#[tauri::command]
+async fn set_hdmi_input(
+    device_id: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let app = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        let clean_id = device_id
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let cfg = app.system_config.read().clone();
+        let (target_w, target_h) = resolution_dimensions(&cfg.resolution);
+        let req_w = if target_w > 0 { target_w } else { 3840 };
+        let req_h = if target_h > 0 { target_h } else { 2160 };
+
+        let guard = app.session.lock();
+        let worker = guard
+            .as_ref()
+            .ok_or_else(|| "No camera connected".to_string())?;
+        worker
+            .set_hdmi_override(clean_id.clone(), req_w, req_h, cfg.fps_cap)
+            .map_err(|e| e.to_string())?;
+        let is_hdmi = clean_id.is_some() || worker.capabilities().brand == CameraBrand::Hdmi;
+        *app.hdmi_input_id.write() = clean_id;
+        *app.last_source_format.lock() = String::from(if is_hdmi {
+            "Uncompressed HDMI"
+        } else {
+            "USB PTP MJPEG"
+        });
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -715,6 +780,7 @@ pub fn run() {
             set_split_preview,
             set_system_config,
             get_telemetry,
+            set_hdmi_input,
             activate_camera_extension,
             update_feed_status,
             runtime_shutdown_for_update,

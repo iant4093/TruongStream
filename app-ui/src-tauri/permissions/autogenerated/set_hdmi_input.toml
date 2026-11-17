@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-hdmi-input"
+description = "Enables the set_hdmi_input command without any pre-configured scope."
+commands.allow = ["set_hdmi_input"]
+
+[[permission]]
+identifier = "deny-set-hdmi-input"
+description = "Denies the set_hdmi_input command without any pre-configured scope."
+commands.deny = ["set_hdmi_input"]

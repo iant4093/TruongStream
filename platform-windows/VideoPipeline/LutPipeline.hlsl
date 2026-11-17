@@ -2,9 +2,9 @@ Texture2D<float4> InputFrame : register(t0);
 Texture3D<float4> Lut3D      : register(t1);
 SamplerState LinearClamp     : register(s0);
 
-RWTexture2D<float4> OutPreview : register(u0);
-RWTexture2D<unorm float> OutY  : register(u1);
-RWTexture2D<unorm float2> OutUV : register(u2);
+RWTexture2D<unorm float4> OutPreview : register(u0);
+RWTexture2D<unorm float>  OutY       : register(u1);
+RWTexture2D<unorm float2> OutUV      : register(u2);
 
 cbuffer LutUniforms : register(b0) {
     float Intensity;
@@ -16,6 +16,7 @@ cbuffer LutUniforms : register(b0) {
     float3 DomainMax;
     uint OutputWidth;
     uint OutputHeight;
+    uint3 _pad1;
 };
 
 float3 RgbToBt709Yuv(float3 rgb) {
@@ -35,10 +36,38 @@ void CSMain(uint3 gid : SV_DispatchThreadID) {
     if (MirrorH != 0) uv.x = 1.0 - uv.x;
     if (FlipV != 0)   uv.y = 1.0 - uv.y;
 
-    float zoom = max(CropZoom, 1.0);
-    uv = saturate((uv - 0.5) / zoom + 0.5);
+    uint srcW = 0;
+    uint srcH = 0;
+    InputFrame.GetDimensions(srcW, srcH);
+    float fSrcW = max(float(srcW), 1.0);
+    float fSrcH = max(float(srcH), 1.0);
+    float srcAspect = fSrcW / fSrcH;
+    float dstAspect = float(OutputWidth) / max(float(OutputHeight), 1.0);
+    float2 aspectScale = float2(1.0, 1.0);
+    if (dstAspect > srcAspect) {
+        aspectScale.y = srcAspect / dstAspect;
+    } else if (srcAspect > dstAspect) {
+        aspectScale.x = dstAspect / srcAspect;
+    }
 
-    float3 rawRgb = InputFrame.SampleLevel(LinearClamp, uv, 0).rgb;
+    float zoom = max(CropZoom, 1.0);
+    float2 sampleUv = saturate((uv - 0.5) * (aspectScale / zoom) + 0.5);
+
+    float3 rawRgb = InputFrame.SampleLevel(LinearClamp, sampleUv, 0).rgb;
+    if (OutputWidth > srcW) {
+        // 5-tap Contrast-Adaptive Sharpening (CAS) reconstruction when upscaling USB EVF frames.
+        float2 texel = 1.0 / float2(fSrcW, fSrcH);
+        float3 n = InputFrame.SampleLevel(LinearClamp, saturate(sampleUv + float2(0.0, -texel.y)), 0).rgb;
+        float3 s = InputFrame.SampleLevel(LinearClamp, saturate(sampleUv + float2(0.0,  texel.y)), 0).rgb;
+        float3 w = InputFrame.SampleLevel(LinearClamp, saturate(sampleUv + float2(-texel.x, 0.0)), 0).rgb;
+        float3 e = InputFrame.SampleLevel(LinearClamp, saturate(sampleUv + float2( texel.x, 0.0)), 0).rgb;
+        float3 minRgb = min(min(rawRgb, min(n, s)), min(w, e));
+        float3 maxRgb = max(max(rawRgb, max(n, s)), max(w, e));
+        float3 amp = saturate(min(minRgb, 1.0 - maxRgb) / max(maxRgb, float3(1e-4, 1e-4, 1e-4)));
+        float3 weight = -0.14 * sqrt(amp);
+        rawRgb = saturate((rawRgb + weight * (n + s + w + e)) / (1.0 + 4.0 * weight));
+    }
+
     float3 lutCoord = saturate((rawRgb - DomainMin) / max(DomainMax - DomainMin, float3(1e-5, 1e-5, 1e-5)));
     float3 lutRgb = Lut3D.SampleLevel(LinearClamp, lutCoord, 0).rgb;
     float3 graded = lerp(rawRgb, lutRgb, saturate(Intensity));

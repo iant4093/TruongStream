@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import CoreImage
 import CoreMedia
@@ -269,6 +270,53 @@ public final class VideoToolboxLutPipeline {
         return nil
     }
 
+    public func createBgraPixelBuffer(
+        from bgraPtr: UnsafePointer<UInt8>,
+        length: Int,
+        width: Int,
+        height: Int
+    ) -> CVPixelBuffer? {
+        guard width >= 2, height >= 2, length >= width * height * 4 else { return nil }
+        if fallbackBgraBuffer == nil || fallbackBgraDims != (width, height) {
+            let attrs: [CFString: Any] = [
+                kCVPixelBufferMetalCompatibilityKey: true,
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+            ]
+            var pb: CVPixelBuffer?
+            guard CVPixelBufferCreate(
+                kCFAllocatorDefault,
+                width,
+                height,
+                kCVPixelFormatType_32BGRA,
+                attrs as CFDictionary,
+                &pb
+            ) == kCVReturnSuccess, let pb else {
+                return nil
+            }
+            fallbackBgraBuffer = pb
+            fallbackBgraDims = (width, height)
+        }
+        guard let pb = fallbackBgraBuffer else { return nil }
+        CVPixelBufferLockBaseAddress(pb, [])
+        defer { CVPixelBufferUnlockBaseAddress(pb, []) }
+        guard let dstBase = CVPixelBufferGetBaseAddress(pb) else { return nil }
+
+        let dstStride = CVPixelBufferGetBytesPerRow(pb)
+        let srcStride = width * 4
+        if dstStride == srcStride {
+            dstBase.copyMemory(from: bgraPtr, byteCount: srcStride * height)
+        } else {
+            let copyBytes = min(dstStride, srcStride)
+            for row in 0..<height {
+                dstBase.advanced(by: row * dstStride).copyMemory(
+                    from: bgraPtr.advanced(by: row * srcStride),
+                    byteCount: copyBytes
+                )
+            }
+        }
+        return pb
+    }
+
     private func nextPooledNv12Buffer(width: Int, height: Int) -> CVPixelBuffer? {
         if nv12Pool.count != 3 || nv12PoolDims != (width, height) {
             nv12Pool.removeAll()
@@ -467,51 +515,35 @@ private func allocCopy(_ data: Data, outPtr: UnsafeMutablePointer<UnsafeMutableP
     outLen.pointee = data.count
 }
 
-@_cdecl("ts_macos_pipeline_process_jpeg")
-public func tsMacosPipelineProcessJpeg(
-    _ ptr: UnsafeMutableRawPointer?,
-    _ jpegPtr: UnsafePointer<UInt8>?,
-    _ jpegLen: Int,
-    _ widthHint: UInt32,
-    _ heightHint: UInt32,
-    _ targetWidth: UInt32,
-    _ targetHeight: UInt32,
-    _ intensity: Float,
-    _ mirrorH: Bool,
-    _ flipV: Bool,
-    _ cropZoom: Float,
-    _ domMinR: Float,
-    _ domMinG: Float,
-    _ domMinB: Float,
-    _ domMaxR: Float,
-    _ domMaxG: Float,
-    _ domMaxB: Float,
-    _ wantNv12Bytes: Bool,
-    _ wantPreviewJpeg: Bool,
-    _ outWidth: UnsafeMutablePointer<UInt32>?,
-    _ outHeight: UnsafeMutablePointer<UInt32>?,
-    _ outIoSurfaceId: UnsafeMutablePointer<UInt32>?,
-    _ outGpuMs: UnsafeMutablePointer<Float>?,
-    _ outYPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
-    _ outYLen: UnsafeMutablePointer<Int>?,
-    _ outUvPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
-    _ outUvLen: UnsafeMutablePointer<Int>?,
-    _ outPreviewPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
-    _ outPreviewLen: UnsafeMutablePointer<Int>?
+private func runPipelineExport(
+    pipeline: VideoToolboxLutPipeline,
+    srcBuffer: CVPixelBuffer,
+    startNs: UInt64,
+    targetWidth: UInt32,
+    targetHeight: UInt32,
+    intensity: Float,
+    mirrorH: Bool,
+    flipV: Bool,
+    cropZoom: Float,
+    domMinR: Float,
+    domMinG: Float,
+    domMinB: Float,
+    domMaxR: Float,
+    domMaxG: Float,
+    domMaxB: Float,
+    wantNv12Bytes: Bool,
+    wantPreviewJpeg: Bool,
+    outWidth: UnsafeMutablePointer<UInt32>?,
+    outHeight: UnsafeMutablePointer<UInt32>?,
+    outIoSurfaceId: UnsafeMutablePointer<UInt32>?,
+    outGpuMs: UnsafeMutablePointer<Float>?,
+    outYPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    outYLen: UnsafeMutablePointer<Int>?,
+    outUvPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    outUvLen: UnsafeMutablePointer<Int>?,
+    outPreviewPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    outPreviewLen: UnsafeMutablePointer<Int>?
 ) -> Bool {
-    guard let ptr, let jpegPtr, jpegLen > 0 else { return false }
-    let pipeline = Unmanaged<VideoToolboxLutPipeline>.fromOpaque(ptr).takeUnretainedValue()
-    let start = DispatchTime.now().uptimeNanoseconds
-
-    let jpegData = Data(bytes: jpegPtr, count: jpegLen)
-    guard let srcBuffer = pipeline.decodeJpegToPixelBuffer(
-        jpegData,
-        width: Int32(widthHint),
-        height: Int32(heightHint)
-    ) else {
-        return false
-    }
-
     let srcW = CVPixelBufferGetWidth(srcBuffer)
     let srcH = CVPixelBufferGetHeight(srcBuffer)
     let outW = max(2, ((targetWidth > 0 && targetHeight > 0) ? Int(targetWidth) : srcW) & ~1)
@@ -578,9 +610,161 @@ public func tsMacosPipelineProcessJpeg(
         allocCopy(jpegOut, outPtr: outPreviewPtr, outLen: outPreviewLen)
     }
 
-    let elapsedMs = Float(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
+    let elapsedMs = Float(DispatchTime.now().uptimeNanoseconds - startNs) / 1_000_000.0
     outGpuMs?.pointee = elapsedMs
     return true
+}
+
+@_cdecl("ts_macos_pipeline_process_jpeg")
+public func tsMacosPipelineProcessJpeg(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ jpegPtr: UnsafePointer<UInt8>?,
+    _ jpegLen: Int,
+    _ widthHint: UInt32,
+    _ heightHint: UInt32,
+    _ targetWidth: UInt32,
+    _ targetHeight: UInt32,
+    _ intensity: Float,
+    _ mirrorH: Bool,
+    _ flipV: Bool,
+    _ cropZoom: Float,
+    _ domMinR: Float,
+    _ domMinG: Float,
+    _ domMinB: Float,
+    _ domMaxR: Float,
+    _ domMaxG: Float,
+    _ domMaxB: Float,
+    _ wantNv12Bytes: Bool,
+    _ wantPreviewJpeg: Bool,
+    _ outWidth: UnsafeMutablePointer<UInt32>?,
+    _ outHeight: UnsafeMutablePointer<UInt32>?,
+    _ outIoSurfaceId: UnsafeMutablePointer<UInt32>?,
+    _ outGpuMs: UnsafeMutablePointer<Float>?,
+    _ outYPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outYLen: UnsafeMutablePointer<Int>?,
+    _ outUvPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outUvLen: UnsafeMutablePointer<Int>?,
+    _ outPreviewPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outPreviewLen: UnsafeMutablePointer<Int>?
+) -> Bool {
+    guard let ptr, let jpegPtr, jpegLen > 0 else { return false }
+    let pipeline = Unmanaged<VideoToolboxLutPipeline>.fromOpaque(ptr).takeUnretainedValue()
+    let start = DispatchTime.now().uptimeNanoseconds
+
+    let jpegData = Data(bytes: jpegPtr, count: jpegLen)
+    guard let srcBuffer = pipeline.decodeJpegToPixelBuffer(
+        jpegData,
+        width: Int32(widthHint),
+        height: Int32(heightHint)
+    ) else {
+        return false
+    }
+
+    return runPipelineExport(
+        pipeline: pipeline,
+        srcBuffer: srcBuffer,
+        startNs: start,
+        targetWidth: targetWidth,
+        targetHeight: targetHeight,
+        intensity: intensity,
+        mirrorH: mirrorH,
+        flipV: flipV,
+        cropZoom: cropZoom,
+        domMinR: domMinR,
+        domMinG: domMinG,
+        domMinB: domMinB,
+        domMaxR: domMaxR,
+        domMaxG: domMaxG,
+        domMaxB: domMaxB,
+        wantNv12Bytes: wantNv12Bytes,
+        wantPreviewJpeg: wantPreviewJpeg,
+        outWidth: outWidth,
+        outHeight: outHeight,
+        outIoSurfaceId: outIoSurfaceId,
+        outGpuMs: outGpuMs,
+        outYPtr: outYPtr,
+        outYLen: outYLen,
+        outUvPtr: outUvPtr,
+        outUvLen: outUvLen,
+        outPreviewPtr: outPreviewPtr,
+        outPreviewLen: outPreviewLen
+    )
+}
+
+@_cdecl("ts_macos_pipeline_process_bgra")
+public func tsMacosPipelineProcessBgra(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ bgraPtr: UnsafePointer<UInt8>?,
+    _ bgraLen: Int,
+    _ srcWidth: UInt32,
+    _ srcHeight: UInt32,
+    _ targetWidth: UInt32,
+    _ targetHeight: UInt32,
+    _ intensity: Float,
+    _ mirrorH: Bool,
+    _ flipV: Bool,
+    _ cropZoom: Float,
+    _ domMinR: Float,
+    _ domMinG: Float,
+    _ domMinB: Float,
+    _ domMaxR: Float,
+    _ domMaxG: Float,
+    _ domMaxB: Float,
+    _ wantNv12Bytes: Bool,
+    _ wantPreviewJpeg: Bool,
+    _ outWidth: UnsafeMutablePointer<UInt32>?,
+    _ outHeight: UnsafeMutablePointer<UInt32>?,
+    _ outIoSurfaceId: UnsafeMutablePointer<UInt32>?,
+    _ outGpuMs: UnsafeMutablePointer<Float>?,
+    _ outYPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outYLen: UnsafeMutablePointer<Int>?,
+    _ outUvPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outUvLen: UnsafeMutablePointer<Int>?,
+    _ outPreviewPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outPreviewLen: UnsafeMutablePointer<Int>?
+) -> Bool {
+    guard let ptr, let bgraPtr, srcWidth >= 2, srcHeight >= 2 else { return false }
+    let pipeline = Unmanaged<VideoToolboxLutPipeline>.fromOpaque(ptr).takeUnretainedValue()
+    let start = DispatchTime.now().uptimeNanoseconds
+
+    guard let srcBuffer = pipeline.createBgraPixelBuffer(
+        from: bgraPtr,
+        length: bgraLen,
+        width: Int(srcWidth),
+        height: Int(srcHeight)
+    ) else {
+        return false
+    }
+
+    return runPipelineExport(
+        pipeline: pipeline,
+        srcBuffer: srcBuffer,
+        startNs: start,
+        targetWidth: targetWidth,
+        targetHeight: targetHeight,
+        intensity: intensity,
+        mirrorH: mirrorH,
+        flipV: flipV,
+        cropZoom: cropZoom,
+        domMinR: domMinR,
+        domMinG: domMinG,
+        domMinB: domMinB,
+        domMaxR: domMaxR,
+        domMaxG: domMaxG,
+        domMaxB: domMaxB,
+        wantNv12Bytes: wantNv12Bytes,
+        wantPreviewJpeg: wantPreviewJpeg,
+        outWidth: outWidth,
+        outHeight: outHeight,
+        outIoSurfaceId: outIoSurfaceId,
+        outGpuMs: outGpuMs,
+        outYPtr: outYPtr,
+        outYLen: outYLen,
+        outUvPtr: outUvPtr,
+        outUvLen: outUvLen,
+        outPreviewPtr: outPreviewPtr,
+        outPreviewLen: outPreviewLen
+    )
 }
 
 private final class ExtensionActivationDelegate: NSObject, OSSystemExtensionRequestDelegate {
@@ -626,4 +810,284 @@ public func ts_macos_free_cstr(_ ptr: UnsafeMutablePointer<CChar>?) {
     if let ptr {
         free(ptr)
     }
+}
+
+// MARK: - AVFoundation Uncompressed 1080p / 4K HDMI Capture
+
+private final class MacOsHdmiCaptureSession: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    private let session = AVCaptureSession()
+    private let device: AVCaptureDevice
+    private let output = AVCaptureVideoDataOutput()
+    private let queue = DispatchQueue(label: "com.iantruong.truongstream.hdmi", qos: .userInteractive)
+    private let lock = NSLock()
+    private let frameSemaphore = DispatchSemaphore(value: 0)
+
+    private var latestBgra = Data()
+    private var latestWidth: UInt32 = 0
+    private var latestHeight: UInt32 = 0
+    private var latestSeq: UInt64 = 0
+    private var lastConsumedSeq: UInt64 = 0
+    private var isRunning = false
+
+    init(device: AVCaptureDevice, width: UInt32, height: UInt32, fps: UInt32) throws {
+        self.device = device
+        super.init()
+
+        session.beginConfiguration()
+        let input = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            throw NSError(domain: "TruongStream.HDMI", code: -1, userInfo: [
+                NSLocalizedDescriptionKey: "Unable to attach HDMI capture device input"
+            ])
+        }
+        session.addInput(input)
+
+        output.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(self, queue: queue)
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw NSError(domain: "TruongStream.HDMI", code: -2, userInfo: [
+                NSLocalizedDescriptionKey: "Unable to attach BGRA video output for HDMI capture"
+            ])
+        }
+        session.addOutput(output)
+        session.commitConfiguration()
+
+        try configureFormat(width: width, height: height, fps: fps)
+        session.startRunning()
+        isRunning = true
+    }
+
+    func configureFormat(width: UInt32, height: UInt32, fps: UInt32) throws {
+        let targetW = Int32(max(width, 640))
+        let targetH = Int32(max(height, 480))
+        let targetFps = Double(max(fps, 15))
+
+        var bestFormat: AVCaptureDevice.Format?
+        var bestRange: AVFrameRateRange?
+        var bestScore = Int.min
+
+        for fmt in device.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
+            let subType = CMFormatDescriptionGetMediaSubType(fmt.formatDescription)
+            let isUncompressed = subType != kCMVideoCodecType_JPEG && subType != kCMVideoCodecType_JPEG_OpenDML
+
+            for range in fmt.videoSupportedFrameRateRanges {
+                var score = 0
+                if dims.width == targetW && dims.height == targetH {
+                    score += 100_000
+                } else {
+                    let areaDiff = abs(Int(dims.width * dims.height) - Int(targetW * targetH))
+                    score -= areaDiff / 1000
+                }
+                if isUncompressed {
+                    score += 5_000
+                }
+                if range.maxFrameRate >= targetFps {
+                    score += 1_000
+                } else {
+                    score += Int(range.maxFrameRate * 10)
+                }
+                if score > bestScore {
+                    bestScore = score
+                    bestFormat = fmt
+                    bestRange = range
+                }
+            }
+        }
+
+        guard let chosenFormat = bestFormat, let chosenRange = bestRange else { return }
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        device.activeFormat = chosenFormat
+        let clampedFps = max(chosenRange.minFrameRate, min(targetFps, chosenRange.maxFrameRate))
+        let timescale = CMTimeScale(max(1, Int32(clampedFps.rounded())))
+        let duration = CMTime(value: 1, timescale: timescale)
+        device.activeVideoMinFrameDuration = duration
+        device.activeVideoMaxFrameDuration = duration
+    }
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+
+        let w = CVPixelBufferGetWidth(pb)
+        let h = CVPixelBufferGetHeight(pb)
+        let stride = CVPixelBufferGetBytesPerRow(pb)
+        guard w >= 2, h >= 2, let base = CVPixelBufferGetBaseAddress(pb) else { return }
+
+        let tightRowBytes = w * 4
+        var packed = Data(count: tightRowBytes * h)
+        packed.withUnsafeMutableBytes { dstRaw in
+            guard let dstBase = dstRaw.baseAddress else { return }
+            if stride == tightRowBytes {
+                dstBase.copyMemory(from: base, byteCount: tightRowBytes * h)
+            } else {
+                for row in 0..<h {
+                    dstBase.advanced(by: row * tightRowBytes).copyMemory(
+                        from: base.advanced(by: row * stride),
+                        byteCount: tightRowBytes
+                    )
+                }
+            }
+        }
+
+        lock.lock()
+        latestBgra = packed
+        latestWidth = UInt32(w)
+        latestHeight = UInt32(h)
+        latestSeq &+= 1
+        lock.unlock()
+        frameSemaphore.signal()
+    }
+
+    func nextFrame(
+        outPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+        outLen: UnsafeMutablePointer<Int>?,
+        outWidth: UnsafeMutablePointer<UInt32>?,
+        outHeight: UnsafeMutablePointer<UInt32>?,
+        outSeq: UnsafeMutablePointer<UInt64>?
+    ) -> Bool {
+        lock.lock()
+        let needWait = latestSeq == lastConsumedSeq
+        lock.unlock()
+        if needWait {
+            _ = frameSemaphore.wait(timeout: .now() + .milliseconds(250))
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        guard !latestBgra.isEmpty, latestSeq > 0, latestSeq != lastConsumedSeq else {
+            return false
+        }
+        lastConsumedSeq = latestSeq
+        outWidth?.pointee = latestWidth
+        outHeight?.pointee = latestHeight
+        outSeq?.pointee = latestSeq
+        allocCopy(latestBgra, outPtr: outPtr, outLen: outLen)
+        return true
+    }
+
+    func stop() {
+        if isRunning {
+            session.stopRunning()
+            isRunning = false
+        }
+    }
+}
+
+private func discoverHdmiDevices() -> [AVCaptureDevice] {
+    let discovery = AVCaptureDevice.DiscoverySession(
+        deviceTypes: [.external],
+        mediaType: .video,
+        position: .unspecified
+    )
+    return discovery.devices.filter { dev in
+        let lower = dev.localizedName.lowercased()
+        return !lower.contains("truongstream") && !lower.contains("obs virtual")
+    }
+}
+
+private func requestCameraPermissionIfNeeded() {
+    let status = AVCaptureDevice.authorizationStatus(for: .video)
+    if status == .notDetermined {
+        let sem = DispatchSemaphore(value: 0)
+        AVCaptureDevice.requestAccess(for: .video) { _ in
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + .seconds(10))
+    }
+}
+
+@_cdecl("ts_macos_hdmi_list_devices")
+public func ts_macos_hdmi_list_devices() -> UnsafeMutablePointer<CChar>? {
+    let devices = discoverHdmiDevices()
+    var lines = ""
+    for dev in devices {
+        var maxW: Int32 = 1920
+        var maxH: Int32 = 1080
+        var maxFps = 60
+        for fmt in dev.formats {
+            let dims = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription)
+            if dims.width * dims.height >= maxW * maxH {
+                maxW = dims.width
+                maxH = dims.height
+                let fmtFps = fmt.videoSupportedFrameRateRanges
+                    .map { Int($0.maxFrameRate.rounded()) }
+                    .max() ?? 60
+                maxFps = max(maxFps, fmtFps)
+            }
+        }
+        let cleanName = dev.localizedName.replacingOccurrences(of: "\t", with: " ")
+        lines += "\(dev.uniqueID)\t\(cleanName)\t\(maxW)\t\(maxH)\t\(maxFps)\n"
+    }
+    return strdup(lines)
+}
+
+@_cdecl("ts_macos_hdmi_open")
+public func ts_macos_hdmi_open(
+    _ deviceIdCStr: UnsafePointer<CChar>?,
+    _ width: UInt32,
+    _ height: UInt32,
+    _ fps: UInt32
+) -> UnsafeMutableRawPointer? {
+    guard let deviceIdCStr else { return nil }
+    requestCameraPermissionIfNeeded()
+    let targetId = String(cString: deviceIdCStr)
+    let devices = discoverHdmiDevices()
+    guard let device = devices.first(where: { $0.uniqueID == targetId }) ?? devices.first else {
+        return nil
+    }
+    guard let session = try? MacOsHdmiCaptureSession(device: device, width: width, height: height, fps: fps) else {
+        return nil
+    }
+    return Unmanaged.passRetained(session).toOpaque()
+}
+
+@_cdecl("ts_macos_hdmi_set_format")
+public func ts_macos_hdmi_set_format(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ width: UInt32,
+    _ height: UInt32,
+    _ fps: UInt32
+) -> Bool {
+    guard let ptr else { return false }
+    let session = Unmanaged<MacOsHdmiCaptureSession>.fromOpaque(ptr).takeUnretainedValue()
+    return (try? session.configureFormat(width: width, height: height, fps: fps)) != nil
+}
+
+@_cdecl("ts_macos_hdmi_next_frame")
+public func ts_macos_hdmi_next_frame(
+    _ ptr: UnsafeMutableRawPointer?,
+    _ outBgraPtr: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?,
+    _ outBgraLen: UnsafeMutablePointer<Int>?,
+    _ outWidth: UnsafeMutablePointer<UInt32>?,
+    _ outHeight: UnsafeMutablePointer<UInt32>?,
+    _ outSeq: UnsafeMutablePointer<UInt64>?
+) -> Bool {
+    guard let ptr else { return false }
+    let session = Unmanaged<MacOsHdmiCaptureSession>.fromOpaque(ptr).takeUnretainedValue()
+    return session.nextFrame(
+        outPtr: outBgraPtr,
+        outLen: outBgraLen,
+        outWidth: outWidth,
+        outHeight: outHeight,
+        outSeq: outSeq
+    )
+}
+
+@_cdecl("ts_macos_hdmi_close")
+public func ts_macos_hdmi_close(_ ptr: UnsafeMutableRawPointer?) {
+    guard let ptr else { return }
+    let session = Unmanaged<MacOsHdmiCaptureSession>.fromOpaque(ptr).takeRetainedValue()
+    session.stop()
 }

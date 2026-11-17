@@ -628,6 +628,8 @@ impl<T: PtpTransportBackend> CameraDriver for CanonDriver<T> {
                         let (width, height) = parse_jpeg_dimensions(jpeg);
                         return Ok(LiveViewFrame {
                             jpeg_bytes: jpeg.to_vec(),
+                            raw_pixels: Vec::new(),
+                            pixel_format: super::FramePixelFormat::Jpeg,
                             sequence: self.frame_seq,
                             timestamp_us: unix_timestamp_us(),
                             width,

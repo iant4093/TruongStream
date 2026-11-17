@@ -81,6 +81,7 @@ export interface StreamStore {
   updateLutConfig: (patch: Partial<LutUiConfig>) => Promise<void>;
   loadCustomCube: (cubeText: string, fileName: string) => Promise<void>;
   updateSystemConfig: (patch: Partial<SystemConfig>) => Promise<void>;
+  setHdmiInput: (deviceId: string | null) => Promise<void>;
 }
 
 const DEFAULT_LUT_CONFIG: LutUiConfig = {
@@ -354,6 +355,15 @@ export const useStreamStore = create<StreamStore>((set, get) => ({
           set({ capabilities });
         }
       }
+      await get().pollTelemetry();
+    } catch (err) {
+      set({ error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  setHdmiInput: async (deviceId) => {
+    try {
+      await invoke('set_hdmi_input', { deviceId: deviceId || null });
       await get().pollTelemetry();
     } catch (err) {
       set({ error: err instanceof Error ? err.message : String(err) });

@@ -1,5 +1,6 @@
 pub mod canon;
 pub mod fujifilm;
+pub mod hdmi;
 pub mod nikon;
 #[cfg(test)]
 pub mod simulator;
@@ -19,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::ptp::USB_CLASS_PTP;
 use crate::ring_buffer::MailboxRingBuffer;
 
-/// Supported camera manufacturers.
+/// Supported camera manufacturers and capture inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CameraBrand {
@@ -27,6 +28,7 @@ pub enum CameraBrand {
     Sony,
     Nikon,
     Fujifilm,
+    Hdmi,
 }
 
 impl CameraBrand {
@@ -46,6 +48,7 @@ impl CameraBrand {
             Self::Sony => "Sony",
             Self::Nikon => "Nikon",
             Self::Fujifilm => "Fujifilm",
+            Self::Hdmi => "HDMI Capture",
         }
     }
 }
@@ -111,10 +114,23 @@ pub struct CameraCapabilities {
     pub supports_manual_focus_drive: bool,
 }
 
-/// Compressed Live View frame captured from the camera's USB bulk stream.
+/// Pixel layout of an incoming camera or HDMI capture frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePixelFormat {
+    #[default]
+    Jpeg,
+    Bgra8,
+    Nv12,
+    Yuy2,
+}
+
+/// Live View frame captured from either USB PTP (MJPEG) or uncompressed HDMI (`BGRA8`/`NV12`/`YUY2`).
 #[derive(Debug, Clone)]
 pub struct LiveViewFrame {
     pub jpeg_bytes: Vec<u8>,
+    pub raw_pixels: Vec<u8>,
+    pub pixel_format: FramePixelFormat,
     pub sequence: u64,
     pub timestamp_us: u64,
     pub width: u32,
@@ -134,6 +150,9 @@ pub trait CameraDriver: Send {
     fn trigger_autofocus(&mut self, norm_x: Option<f32>, norm_y: Option<f32>)
         -> anyhow::Result<()>;
     fn drive_manual_focus(&mut self, step: i32) -> anyhow::Result<()>;
+    fn set_capture_format(&mut self, _width: u32, _height: u32, _fps: u32) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn capabilities(&self) -> &CameraCapabilities;
     fn disconnect(&mut self) -> anyhow::Result<()>;
 }
@@ -226,10 +245,11 @@ pub fn discover_usb_cameras() -> anyhow::Result<Vec<DiscoveredCamera>> {
         });
     }
 
+    cameras.extend(hdmi::discover_hdmi_cameras());
     Ok(cameras)
 }
 
-/// Instantiates the appropriate live USB [`CameraDriver`] for a [`DiscoveredCamera`].
+/// Instantiates the appropriate live USB or HDMI [`CameraDriver`] for a [`DiscoveredCamera`].
 pub fn open_usb_driver(camera: &DiscoveredCamera) -> anyhow::Result<Box<dyn CameraDriver>> {
     let serial = Some(camera.serial_number.as_str());
     match camera.brand {
@@ -249,6 +269,7 @@ pub fn open_usb_driver(camera: &DiscoveredCamera) -> anyhow::Result<Box<dyn Came
             Some(camera.product_id),
             serial,
         )?)),
+        CameraBrand::Hdmi => Ok(Box::new(hdmi::HdmiDriver::open(camera)?)),
     }
 }
 
@@ -329,6 +350,8 @@ pub(crate) fn unix_timestamp_us() -> u64 {
         .unwrap_or(0)
 }
 
+type HdmiTarget = Option<(String, u32, u32, u32)>;
+
 enum WorkerCommand {
     SetLiveView(bool, mpsc::Sender<anyhow::Result<()>>),
     SetProperty(
@@ -338,6 +361,13 @@ enum WorkerCommand {
     ),
     TriggerAutofocus(Option<f32>, Option<f32>, mpsc::Sender<anyhow::Result<()>>),
     DriveManualFocus(i32, mpsc::Sender<anyhow::Result<()>>),
+    SetHdmiOverride(
+        Option<String>,
+        u32,
+        u32,
+        u32,
+        mpsc::Sender<anyhow::Result<()>>,
+    ),
     Shutdown(mpsc::Sender<()>),
 }
 
@@ -407,6 +437,8 @@ impl CameraSessionWorker {
     ) {
         let mut live_view_active = false;
         let mut last_event_poll = Instant::now();
+        let mut hdmi_target: HdmiTarget = None;
+        let mut hdmi_stream: Option<Box<dyn hdmi::HdmiCaptureStream>> = None;
 
         loop {
             // Drain all pending control commands before polling the next Live View frame.
@@ -415,6 +447,8 @@ impl CameraSessionWorker {
                     cmd,
                     &mut *driver,
                     &mut live_view_active,
+                    &mut hdmi_target,
+                    &mut hdmi_stream,
                     &capabilities,
                     &streaming,
                 ) {
@@ -424,7 +458,12 @@ impl CameraSessionWorker {
 
             if live_view_active {
                 let frame_start = Instant::now();
-                match driver.next_frame() {
+                let frame_result = if let Some(ref mut stream) = hdmi_stream {
+                    stream.next_uncompressed_frame()
+                } else {
+                    driver.next_frame()
+                };
+                match frame_result {
                     Ok(frame) => {
                         ring_buffer.push(frame);
                     }
@@ -455,6 +494,8 @@ impl CameraSessionWorker {
                                 cmd,
                                 &mut *driver,
                                 &mut live_view_active,
+                                &mut hdmi_target,
+                                &mut hdmi_stream,
                                 &capabilities,
                                 &streaming,
                             ) {
@@ -463,6 +504,9 @@ impl CameraSessionWorker {
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => break,
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
+                            if let Some(mut stream) = hdmi_stream.take() {
+                                stream.stop();
+                            }
                             let _ = driver.disconnect();
                             return;
                         }
@@ -476,6 +520,8 @@ impl CameraSessionWorker {
                             cmd,
                             &mut *driver,
                             &mut live_view_active,
+                            &mut hdmi_target,
+                            &mut hdmi_stream,
                             &capabilities,
                             &streaming,
                         ) {
@@ -490,6 +536,9 @@ impl CameraSessionWorker {
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        if let Some(mut stream) = hdmi_stream.take() {
+                            stream.stop();
+                        }
                         let _ = driver.disconnect();
                         return;
                     }
@@ -502,17 +551,40 @@ impl CameraSessionWorker {
         cmd: WorkerCommand,
         driver: &mut dyn CameraDriver,
         live_view_active: &mut bool,
+        hdmi_target: &mut HdmiTarget,
+        hdmi_stream: &mut Option<Box<dyn hdmi::HdmiCaptureStream>>,
         capabilities: &RwLock<CameraCapabilities>,
         streaming: &AtomicBool,
     ) -> bool {
         match cmd {
             WorkerCommand::SetLiveView(enable, reply) => {
                 let res = if enable && !*live_view_active {
-                    driver.start_live_view().inspect(|()| {
-                        *live_view_active = true;
-                        streaming.store(true, Ordering::Relaxed);
-                    })
+                    let driver_res = driver.start_live_view();
+                    match driver_res {
+                        Ok(()) => {
+                            let hdmi_res = if let Some((ref dev_id, w, h, f)) = *hdmi_target {
+                                if hdmi_stream.is_none() {
+                                    hdmi::open_hdmi_stream(dev_id, w, h, f).map(|s| {
+                                        *hdmi_stream = Some(s);
+                                    })
+                                } else {
+                                    Ok(())
+                                }
+                            } else {
+                                Ok(())
+                            };
+                            if hdmi_res.is_ok() {
+                                *live_view_active = true;
+                                streaming.store(true, Ordering::Relaxed);
+                            }
+                            hdmi_res
+                        }
+                        Err(err) => Err(err),
+                    }
                 } else if !enable && *live_view_active {
+                    if let Some(mut stream) = hdmi_stream.take() {
+                        stream.stop();
+                    }
                     driver.stop_live_view().inspect(|()| {
                         *live_view_active = false;
                         streaming.store(false, Ordering::Relaxed);
@@ -546,7 +618,43 @@ impl CameraSessionWorker {
                 let _ = reply.send(driver.drive_manual_focus(step));
                 false
             }
+            WorkerCommand::SetHdmiOverride(opt_id, width, height, fps, reply) => {
+                let res = if driver.brand() == CameraBrand::Hdmi {
+                    *hdmi_target = None;
+                    if let Some(mut stream) = hdmi_stream.take() {
+                        stream.stop();
+                    }
+                    let r = driver.set_capture_format(width, height, fps);
+                    if r.is_ok() {
+                        *capabilities.write() = driver.capabilities().clone();
+                    }
+                    r
+                } else if let Some(dev_id) = opt_id {
+                    if let Some(mut stream) = hdmi_stream.take() {
+                        stream.stop();
+                    }
+                    *hdmi_target = Some((dev_id.clone(), width, height, fps));
+                    if *live_view_active {
+                        hdmi::open_hdmi_stream(&dev_id, width, height, fps).map(|s| {
+                            *hdmi_stream = Some(s);
+                        })
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    *hdmi_target = None;
+                    if let Some(mut stream) = hdmi_stream.take() {
+                        stream.stop();
+                    }
+                    Ok(())
+                };
+                let _ = reply.send(res);
+                false
+            }
             WorkerCommand::Shutdown(reply) => {
+                if let Some(mut stream) = hdmi_stream.take() {
+                    stream.stop();
+                }
                 if *live_view_active {
                     if let Err(err) = driver.stop_live_view() {
                         warn!(?err, "failed to stop live view during shutdown");
@@ -576,6 +684,20 @@ impl CameraSessionWorker {
 
     pub fn set_fps_cap(&self, fps_cap: u32) {
         self.fps_cap.store(fps_cap.clamp(15, 60), Ordering::Relaxed);
+    }
+
+    pub fn set_hdmi_override(
+        &self,
+        device_id: Option<String>,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx.send(WorkerCommand::SetHdmiOverride(
+            device_id, width, height, fps, reply_tx,
+        ))?;
+        reply_rx.recv()?
     }
 
     pub fn start_live_view(&self) -> anyhow::Result<()> {

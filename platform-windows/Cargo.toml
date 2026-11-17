@@ -15,3 +15,6 @@ serde.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 image.workspace = true
+
+[build-dependencies]
+cc.workspace = true

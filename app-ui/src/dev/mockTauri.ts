@@ -165,6 +165,7 @@ export function installBrowserPreviewMocksIfNeeded(): void {
   let splitPreview = false;
   let sequence = 0;
   let activeCameraId = MOCK_CAMERAS[0].id;
+  let hdmiInputId: string | null = null;
   let caps = createInitialCapabilities();
   let sysConfig: SystemConfig = {
     resolution: '1080p',
@@ -195,6 +196,7 @@ export function installBrowserPreviewMocksIfNeeded(): void {
       case 'disconnect_camera':
         connected = false;
         streaming = false;
+        hdmiInputId = null;
         sysConfig = {
           resolution: '1080p',
           fpsCap: 60,
@@ -222,10 +224,12 @@ export function installBrowserPreviewMocksIfNeeded(): void {
             : activeLut.title.includes('Monochrome')
               ? '#262626'
               : '#252932';
+        const srcW = hdmiInputId ? (sysConfig.resolution === '4k' ? 3840 : 1920) : 960;
+        const srcH = hdmiInputId ? (sysConfig.resolution === '4k' ? 2160 : 1080) : 640;
         const targetWidth =
-          sysConfig.resolution === 'native' ? 960 : sysConfig.resolution === '4k' ? 3840 : 1920;
+          sysConfig.resolution === 'native' ? srcW : sysConfig.resolution === '4k' ? 3840 : 1920;
         const targetHeight =
-          sysConfig.resolution === 'native' ? 640 : sysConfig.resolution === '4k' ? 2160 : 1080;
+          sysConfig.resolution === 'native' ? srcH : sysConfig.resolution === '4k' ? 2160 : 1080;
         const payload: FramePayload = {
           gradedDataUrl: makePreviewSvgUrl(
             `${caps.camera_model} · ${shutterLabel} · ${isoLabel} · ${activeLut.title}`,
@@ -236,8 +240,8 @@ export function installBrowserPreviewMocksIfNeeded(): void {
             : null,
           width: targetWidth,
           height: targetHeight,
-          sourceWidth: 960,
-          sourceHeight: 640,
+          sourceWidth: srcW,
+          sourceHeight: srcH,
           sequence,
           latencyMs: 28.4,
           fps: sysConfig.fpsCap === 30 ? 30.0 : 59.94,
@@ -307,19 +311,28 @@ export function installBrowserPreviewMocksIfNeeded(): void {
         return null;
       case 'plugin:app|version':
         return '1.0.0';
+      case 'set_hdmi_input': {
+        const val = p.deviceId;
+        hdmiInputId = typeof val === 'string' && val.trim().length > 0 ? val : null;
+        return null;
+      }
       case 'get_telemetry': {
+        const srcW = hdmiInputId ? (sysConfig.resolution === '4k' ? 3840 : 1920) : 960;
+        const srcH = hdmiInputId ? (sysConfig.resolution === '4k' ? 2160 : 1080) : 640;
         const targetWidth =
-          sysConfig.resolution === 'native' ? 960 : sysConfig.resolution === '4k' ? 3840 : 1920;
+          sysConfig.resolution === 'native' ? srcW : sysConfig.resolution === '4k' ? 3840 : 1920;
         const targetHeight =
-          sysConfig.resolution === 'native' ? 640 : sysConfig.resolution === '4k' ? 2160 : 1080;
+          sysConfig.resolution === 'native' ? srcH : sysConfig.resolution === '4k' ? 2160 : 1080;
         const tel: PipelineTelemetry = {
           connected,
           streaming,
           cameraId: connected ? activeCameraId : null,
+          hdmiInputId,
+          sourceFormat: hdmiInputId ? 'Uncompressed HDMI' : 'USB PTP MJPEG',
           width: targetWidth,
           height: targetHeight,
-          sourceWidth: 960,
-          sourceHeight: 640,
+          sourceWidth: srcW,
+          sourceHeight: srcH,
           fps: streaming ? (sysConfig.fpsCap === 30 ? 30.0 : 59.94) : 0,
           latencyMs: streaming ? 28.4 : 0,
           usbMs: streaming ? 11.2 : 0,

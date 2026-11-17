@@ -36,6 +36,7 @@ const MANUAL_EXPOSURE_PROPS: ReadonlySet<CameraPropertyId> = new Set([
 export const RightInspector: React.FC = () => {
   const activeTab = useStreamStore((s) => s.activeTab);
   const setActiveTab = useStreamStore((s) => s.setActiveTab);
+  const cameras = useStreamStore((s) => s.cameras);
   const capabilities = useStreamStore((s) => s.capabilities);
   const telemetry = useStreamStore((s) => s.telemetry);
   const lutConfig = useStreamStore((s) => s.lutConfig);
@@ -48,6 +49,7 @@ export const RightInspector: React.FC = () => {
   const updateLutConfig = useStreamStore((s) => s.updateLutConfig);
   const loadCustomCube = useStreamStore((s) => s.loadCustomCube);
   const updateSystemConfig = useStreamStore((s) => s.updateSystemConfig);
+  const setHdmiInput = useStreamStore((s) => s.setHdmiInput);
   const setCleanOutputMode = useStreamStore((s) => s.setCleanOutputMode);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -76,6 +78,9 @@ export const RightInspector: React.FC = () => {
   }, []);
 
   const streamUrl = telemetry?.streamUrl ?? 'http://127.0.0.1:49210/stream.mjpeg';
+  const hdmiCameras = cameras.filter((c) => c.brand === 'hdmi');
+  const isDirectHdmi = capabilities?.brand === 'hdmi';
+  const isHdmiFeed = telemetry?.sourceFormat === 'Uncompressed HDMI' || isDirectHdmi;
 
   const copyStreamUrl = async () => {
     try {
@@ -377,14 +382,49 @@ export const RightInspector: React.FC = () => {
                     const srcW = telemetry?.sourceWidth || 960;
                     const srcH = telemetry?.sourceHeight || 640;
                     if (systemConfig.resolution === 'native') {
-                      return `Direct 1:1 camera EVF stream (${srcW}×${srcH}) — zero scaling`;
+                      return isHdmiFeed
+                        ? `Direct 1:1 uncompressed HDMI stream (${srcW}×${srcH}) — zero scaling`
+                        : `Direct 1:1 camera EVF stream (${srcW}×${srcH}) — zero scaling`;
                     }
                     if (systemConfig.resolution === '4k') {
-                      return `GPU-upscaled 4K 16:9 from ${srcW}×${srcH} USB EVF feed (native 4K requires HDMI)`;
+                      return isHdmiFeed
+                        ? `Uncompressed HDMI -> 4K UHD (${srcW}×${srcH} input)`
+                        : `GPU-upscaled 4K 16:9 from ${srcW}×${srcH} USB EVF feed (native 4K requires HDMI)`;
                     }
-                    return `GPU-upscaled 16:9 from ${srcW}×${srcH} USB EVF feed`;
+                    return isHdmiFeed
+                      ? `Uncompressed HDMI -> 1080p (${srcW}×${srcH} input)`
+                      : `GPU-upscaled 16:9 from ${srcW}×${srcH} USB EVF feed`;
                   })()}
                 </div>
+              </div>
+
+              <div className="property-field">
+                <div className="property-row">
+                  <span>Video Input Source (Uncompressed HDMI)</span>
+                </div>
+                {isDirectHdmi ? (
+                  <div className="toggle-description">
+                    {`Direct uncompressed HDMI capture active (${telemetry?.sourceWidth ?? 1920}×${telemetry?.sourceHeight ?? 1080})`}
+                  </div>
+                ) : (
+                  <>
+                    <Dropdown<string>
+                      label="Hybrid HDMI Video Input"
+                      value={telemetry?.hdmiInputId ?? ''}
+                      options={[
+                        ['', 'USB PTP Live View (Built-in)'],
+                        ...hdmiCameras.map((c) => [c.id, c.model_name] as const),
+                      ]}
+                      disabled={!telemetry?.connected}
+                      onChange={(val) => void setHdmiInput(val || null)}
+                    />
+                    <div className="toggle-description">
+                      {hdmiCameras.length === 0
+                        ? 'Plug an external 1080p/4K HDMI capture card to override USB EVF video while keeping USB dials & AF.'
+                        : 'Pair an HDMI capture card for uncompressed 1080p/4K video while USB PTP controls dials & AF.'}
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="property-field">
@@ -464,9 +504,9 @@ export const RightInspector: React.FC = () => {
               <SectionTitle>Pipeline Diagnostics</SectionTitle>
               <div className="panel">
                 <div className="diag-row">
-                  <span>Camera EVF Feed</span>
+                  <span>Camera Video Feed</span>
                   <span className="tabular-mono">
-                    {`${telemetry?.sourceWidth || 960}×${telemetry?.sourceHeight || 640} MJPEG`}
+                    {`${telemetry?.sourceWidth || 960}×${telemetry?.sourceHeight || 640} ${isHdmiFeed ? 'HDMI' : 'MJPEG'}`}
                   </span>
                 </div>
                 <div className="diag-row">

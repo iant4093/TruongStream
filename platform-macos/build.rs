@@ -46,6 +46,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=truongstream_vt_metal");
 
     for fw in [
+        "AVFoundation",
         "Metal",
         "VideoToolbox",
         "CoreMedia",

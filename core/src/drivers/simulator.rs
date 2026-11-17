@@ -207,6 +207,7 @@ impl SimulatedPtpTransport {
                 );
                 ("Fujifilm X-T5", "FUJIFILM", "3.10", "sim-fuji-xt5")
             }
+            CameraBrand::Hdmi => ("HDMI Capture", "Generic", "1.0", "sim-hdmi"),
         };
 
         Self {
@@ -370,7 +371,7 @@ impl SimulatedPtpTransport {
                 match self.brand {
                     CameraBrand::Sony => (r, g, b) = (0.85, 0.42, 0.12),
                     CameraBrand::Nikon => (r, g, b) = (0.86, 0.74, 0.14),
-                    CameraBrand::Fujifilm | CameraBrand::Canon => {
+                    CameraBrand::Fujifilm | CameraBrand::Canon | CameraBrand::Hdmi => {
                         let shift = (film_badge_idx % 3) as f32 * 0.15;
                         (r, g, b) = (0.18 + shift, 0.64, 0.42);
                     }
@@ -451,7 +452,7 @@ impl SimulatedPtpTransport {
                     .unwrap_or(0x8012),
                 0,
             ),
-            CameraBrand::Fujifilm | CameraBrand::Canon => (
+            CameraBrand::Fujifilm | CameraBrand::Canon | CameraBrand::Hdmi => (
                 self.props
                     .get(&fuji_prop::ISO)
                     .map(|p| p.current)

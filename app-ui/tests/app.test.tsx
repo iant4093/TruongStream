@@ -343,5 +343,37 @@ describe('TruongStream Studio UI', () => {
     });
     expect(document.querySelector('.app-window-frame.is-clean-output')).toBeNull();
     expect(document.querySelector('.workspace-titlebar')).toBeTruthy();
+
+    // Connect Canon EOS R7 and verify Hybrid Uncompressed 1080p/4K HDMI input pairing
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Connect$/i }));
+    });
+    await act(async () => {
+      useStreamStore.setState((s) => ({
+        cameras: [
+          ...s.cameras,
+          {
+            id: 'hdmi:camlink-4k',
+            brand: 'hdmi',
+            vendor_id: 0x0fd9,
+            product_id: 0x0066,
+            model_name: 'Cam Link 4K (HDMI 2160p)',
+            serial_number: 'camlink-4k',
+            usb_speed_mbps: 5000,
+          },
+        ],
+      }));
+      fireEvent.click(screen.getByRole('button', { name: 'System' }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('combobox', { name: 'Hybrid HDMI Video Input' }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('option', { name: 'Cam Link 4K (HDMI 2160p)' }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Uncompressed HDMI -> 1080p \(1920×1080 input\)/)).toBeTruthy();
+      expect(screen.getByText(/1920×1080 HDMI/)).toBeTruthy();
+    });
   });
 });

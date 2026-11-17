@@ -560,10 +560,104 @@ pub fn process_jpeg_with_lut(
     }
 
     let decoded = image::load_from_memory_with_format(jpeg_bytes, ImageFormat::Jpeg)?.to_rgb8();
-    let src_width = decoded.width();
-    let src_height = decoded.height();
-    let src = decoded.as_raw();
+    grade_rgb_pixels(
+        decoded.as_raw(),
+        decoded.width(),
+        decoded.height(),
+        lut,
+        settings,
+        need_nv12,
+        start,
+    )
+}
 
+/// Applies 3D LUT trilinear grading directly to an uncompressed HDMI frame (`BGRA8`, `NV12`, or `YUY2`)
+/// without JPEG compression/decompression roundtrips.
+pub fn process_raw_frame_with_lut(
+    raw_pixels: &[u8],
+    pixel_format: crate::drivers::FramePixelFormat,
+    src_width: u32,
+    src_height: u32,
+    lut: &CubeLut,
+    settings: &LutRenderSettings,
+    need_nv12: bool,
+) -> anyhow::Result<ProcessedFrame> {
+    use crate::drivers::{hdmi, FramePixelFormat};
+
+    let start = std::time::Instant::now();
+    if src_width < 2 || src_height < 2 {
+        anyhow::bail!("invalid uncompressed frame dimensions {src_width}x{src_height}");
+    }
+
+    let owned_bgra;
+    let bgra = match pixel_format {
+        FramePixelFormat::Bgra8 => raw_pixels,
+        FramePixelFormat::Yuy2 => {
+            owned_bgra = hdmi::yuy2_to_bgra8(raw_pixels, src_width, src_height);
+            &owned_bgra
+        }
+        FramePixelFormat::Nv12 => {
+            owned_bgra = hdmi::nv12_to_bgra8(raw_pixels, src_width, src_height);
+            &owned_bgra
+        }
+        FramePixelFormat::Jpeg => {
+            return process_jpeg_with_lut(raw_pixels, lut, settings, need_nv12);
+        }
+    };
+
+    let expected_len = (src_width as usize) * (src_height as usize) * 4;
+    if bgra.len() < expected_len {
+        anyhow::bail!(
+            "uncompressed BGRA8 buffer too small: expected {expected_len}, got {}",
+            bgra.len()
+        );
+    }
+
+    let mut rgb = vec![0u8; (src_width as usize) * (src_height as usize) * 3];
+    for (src_px, dst_px) in bgra[..expected_len]
+        .chunks_exact(4)
+        .zip(rgb.chunks_exact_mut(3))
+    {
+        dst_px[0] = src_px[2];
+        dst_px[1] = src_px[1];
+        dst_px[2] = src_px[0];
+    }
+
+    grade_rgb_pixels(&rgb, src_width, src_height, lut, settings, need_nv12, start)
+}
+
+/// Processes any [`crate::drivers::LiveViewFrame`] (compressed JPEG or uncompressed HDMI pixels).
+pub fn process_live_frame_with_lut(
+    frame: &crate::drivers::LiveViewFrame,
+    lut: &CubeLut,
+    settings: &LutRenderSettings,
+    need_nv12: bool,
+) -> anyhow::Result<ProcessedFrame> {
+    if frame.pixel_format == crate::drivers::FramePixelFormat::Jpeg {
+        process_jpeg_with_lut(&frame.jpeg_bytes, lut, settings, need_nv12)
+    } else {
+        process_raw_frame_with_lut(
+            &frame.raw_pixels,
+            frame.pixel_format,
+            frame.width,
+            frame.height,
+            lut,
+            settings,
+            need_nv12,
+        )
+    }
+}
+
+fn grade_rgb_pixels(
+    src: &[u8],
+    src_width: u32,
+    src_height: u32,
+    lut: &CubeLut,
+    settings: &LutRenderSettings,
+    need_nv12: bool,
+    start: std::time::Instant,
+) -> anyhow::Result<ProcessedFrame> {
+    let target_override = settings.output_width > 1 && settings.output_height > 1;
     let width = if target_override {
         settings.output_width & !1
     } else {
@@ -651,10 +745,26 @@ pub fn process_jpeg_with_lut(
         }
     }
 
-    let mut preview_jpeg = Vec::with_capacity(jpeg_bytes.len());
+    let mut preview_jpeg = Vec::with_capacity(65_536);
     let mut cursor = std::io::Cursor::new(&mut preview_jpeg);
     let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, 86);
-    encoder.encode(&graded_rgb, width, height, image::ExtendedColorType::Rgb8)?;
+    if width > 1920 {
+        let prev_w = 1920u32;
+        let prev_h = ((height as u64 * prev_w as u64) / width as u64).max(2) as u32 & !1;
+        let mut preview_rgb = vec![0u8; (prev_w * prev_h * 3) as usize];
+        for py in 0..prev_h {
+            let sy = ((py as u64 * height as u64) / prev_h as u64) as u32;
+            for px in 0..prev_w {
+                let sx = ((px as u64 * width as u64) / prev_w as u64) as u32;
+                let s = ((sy * width + sx) * 3) as usize;
+                let d = ((py * prev_w + px) * 3) as usize;
+                preview_rgb[d..d + 3].copy_from_slice(&graded_rgb[s..s + 3]);
+            }
+        }
+        encoder.encode(&preview_rgb, prev_w, prev_h, image::ExtendedColorType::Rgb8)?;
+    } else {
+        encoder.encode(&graded_rgb, width, height, image::ExtendedColorType::Rgb8)?;
+    }
 
     Ok(ProcessedFrame {
         width,
@@ -738,5 +848,48 @@ mod tests {
                 assert!((0.0..=1.0).contains(&ch));
             }
         }
+    }
+
+    #[test]
+    fn grades_uncompressed_1080p_and_4k_hdmi_frames_without_jpeg_roundtrip() {
+        let lut = BuiltinLutPreset::TealOrange.build_lut();
+        let raw_bgra = vec![160u8; 64 * 36 * 4];
+        let f1080 = process_raw_frame_with_lut(
+            &raw_bgra,
+            crate::drivers::FramePixelFormat::Bgra8,
+            64,
+            36,
+            &lut,
+            &LutRenderSettings {
+                intensity: 1.0,
+                output_width: 1920,
+                output_height: 1080,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!((f1080.width, f1080.height), (1920, 1080));
+        assert_eq!(f1080.y_plane.len(), 1920 * 1080);
+        assert_eq!(f1080.uv_plane.len(), 960 * 540 * 2);
+        assert!(f1080.preview_jpeg.starts_with(&[0xFF, 0xD8]));
+
+        let f4k = process_raw_frame_with_lut(
+            &raw_bgra,
+            crate::drivers::FramePixelFormat::Bgra8,
+            64,
+            36,
+            &lut,
+            &LutRenderSettings {
+                intensity: 0.8,
+                output_width: 3840,
+                output_height: 2160,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!((f4k.width, f4k.height), (3840, 2160));
+        assert!(f4k.preview_jpeg.starts_with(&[0xFF, 0xD8]));
     }
 }

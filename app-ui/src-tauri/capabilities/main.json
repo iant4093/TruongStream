@@ -34,6 +34,7 @@
     "allow-set-split-preview",
     "allow-set-system-config",
     "allow-get-telemetry",
+    "allow-set-hdmi-input",
     "allow-activate-camera-extension",
     "allow-update-feed-status",
     "allow-runtime-shutdown-for-update"

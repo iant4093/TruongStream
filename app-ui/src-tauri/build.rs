@@ -12,6 +12,7 @@ const APP_COMMANDS: &[&str] = &[
     "set_split_preview",
     "set_system_config",
     "get_telemetry",
+    "set_hdmi_input",
     "activate_camera_extension",
     "update_feed_status",
     "runtime_shutdown_for_update",

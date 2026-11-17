@@ -1,4 +1,4 @@
-export type CameraBrand = 'canon' | 'sony' | 'nikon' | 'fujifilm';
+export type CameraBrand = 'canon' | 'sony' | 'nikon' | 'fujifilm' | 'hdmi';
 
 export interface DiscoveredCamera {
   id: string;
@@ -90,6 +90,8 @@ export interface PipelineTelemetry {
   connected: boolean;
   streaming: boolean;
   cameraId: string | null;
+  hdmiInputId: string | null;
+  sourceFormat: string;
   width: number;
   height: number;
   sourceWidth: number;

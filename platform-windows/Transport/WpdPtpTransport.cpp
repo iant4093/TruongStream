@@ -3,6 +3,7 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <objbase.h>
 #include <PortableDeviceApi.h>
 #include <PortableDevice.h>
 #include <wrl/client.h>
@@ -126,4 +127,22 @@ private:
 };
 
 } // namespace truongstream
+
+extern "C" {
+
+uint32_t ts_win_wpd_probe() {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    Microsoft::WRL::ComPtr<IPortableDeviceManager> mgr;
+    if (FAILED(CoCreateInstance(
+            CLSID_PortableDeviceManager, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&mgr)))) {
+        return 0;
+    }
+    DWORD count = 0;
+    if (FAILED(mgr->GetDevices(nullptr, &count))) {
+        return 0;
+    }
+    return static_cast<uint32_t>(count);
+}
+
+} // extern "C"
 #endif
