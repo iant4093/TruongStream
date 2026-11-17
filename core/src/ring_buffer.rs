@@ -197,8 +197,11 @@ impl<T> MailboxRingBuffer<T> {
                     }
                 }
                 let p_after = self.published_seq.load(Ordering::Acquire);
-                if p_before == p_after || snapshot_tries >= 4 {
+                if p_before == p_after || snapshot_tries >= 64 {
                     break oldest;
+                }
+                if snapshot_tries >= 8 {
+                    std::thread::yield_now();
                 }
                 snapshot_tries += 1;
             };
@@ -370,6 +373,8 @@ mod tests {
         }
 
         producer.join().expect("producer thread panicked");
+        // Flush any surviving lower-sequence slot that remained queued before the final frame popped.
+        while ring.pop().is_some() {}
         let stats = ring.stats();
         assert_eq!(stats.pushed, 10_000);
         assert_eq!(stats.popped + stats.dropped, 10_000);
