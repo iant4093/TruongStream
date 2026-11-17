@@ -21,6 +21,16 @@ const MOCK_CAMERAS: DiscoveredCamera[] = [
   },
 ];
 
+const MOCK_HDMI_PREVIEW_CAMERA: DiscoveredCamera = {
+  id: 'hdmi:camlink-4k',
+  brand: 'hdmi',
+  vendor_id: 0x0fd9,
+  product_id: 0x0066,
+  model_name: 'Cam Link 4K (HDMI 2160p)',
+  serial_number: 'camlink-4k',
+  usb_speed_mbps: 5000,
+};
+
 function createInitialCapabilities(): CameraCapabilities {
   return {
     brand: 'canon',
@@ -137,20 +147,14 @@ function createInitialCapabilities(): CameraCapabilities {
   };
 }
 
-function makePreviewSvgUrl(label: string, tint: string): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
-    <defs>
-      <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#19212a"/>
-        <stop offset="55%" stop-color="${tint}"/>
-        <stop offset="100%" stop-color="#141414"/>
-      </linearGradient>
-    </defs>
-    <rect width="1280" height="720" fill="url(#bg)"/>
-    <circle cx="640" cy="360" r="140" fill="none" stroke="rgba(255,255,255,0.16)" stroke-width="2"/>
-    <text x="640" y="365" fill="rgba(237,237,237,0.75)" font-family="ui-monospace, monospace" font-size="22" text-anchor="middle">${label}</text>
-  </svg>`;
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+function previewPhotoForLut(title: string): string {
+  if (title.includes('Teal')) return '/preview/teal-orange.jpg';
+  if (title.includes('Kodak')) return '/preview/kodak-2383.jpg';
+  if (title.includes('Eterna')) return '/preview/fuji-eterna.jpg';
+  if (title.includes('Monochrome') || title.includes('Acros')) {
+    return '/preview/monochrome-acros.jpg';
+  }
+  return '/preview/ungraded.jpg';
 }
 
 let installed = false;
@@ -183,8 +187,12 @@ export function installBrowserPreviewMocksIfNeeded(): void {
   mockIPC((cmd, args) => {
     const p = (args ?? {}) as Record<string, unknown>;
     switch (cmd) {
-      case 'list_cameras':
-        return MOCK_CAMERAS;
+      case 'list_cameras': {
+        const includeHdmi =
+          typeof window !== 'undefined' &&
+          new URLSearchParams(window.location.search).get('hdmi') === '1';
+        return includeHdmi ? [...MOCK_CAMERAS, MOCK_HDMI_PREVIEW_CAMERA] : MOCK_CAMERAS;
+      }
       case 'connect_camera': {
         const requestedId = String(p.cameraId ?? MOCK_CAMERAS[0].id);
         const match = MOCK_CAMERAS.find((c) => c.id === requestedId) ?? MOCK_CAMERAS[0];
@@ -215,15 +223,6 @@ export function installBrowserPreviewMocksIfNeeded(): void {
       case 'get_latest_frame': {
         if (!connected || !streaming) return null;
         sequence += 1;
-        const isoLabel = caps.properties.iso?.current.label ?? 'ISO 800';
-        const shutterLabel = caps.properties.shutter_speed?.current.label ?? '1/125';
-        const tint = activeLut.title.includes('Teal')
-          ? '#1e3c42'
-          : activeLut.title.includes('Kodak')
-            ? '#3b2b1d'
-            : activeLut.title.includes('Monochrome')
-              ? '#262626'
-              : '#252932';
         const srcW = hdmiInputId ? (sysConfig.resolution === '4k' ? 3840 : 1920) : 960;
         const srcH = hdmiInputId ? (sysConfig.resolution === '4k' ? 2160 : 1080) : 640;
         const targetWidth =
@@ -231,13 +230,8 @@ export function installBrowserPreviewMocksIfNeeded(): void {
         const targetHeight =
           sysConfig.resolution === 'native' ? srcH : sysConfig.resolution === '4k' ? 2160 : 1080;
         const payload: FramePayload = {
-          gradedDataUrl: makePreviewSvgUrl(
-            `${caps.camera_model} · ${shutterLabel} · ${isoLabel} · ${activeLut.title}`,
-            tint,
-          ),
-          ungradedDataUrl: splitPreview
-            ? makePreviewSvgUrl(`${caps.camera_model} · Ungraded Camera Feed`, '#252932')
-            : null,
+          gradedDataUrl: previewPhotoForLut(activeLut.title),
+          ungradedDataUrl: splitPreview ? '/preview/ungraded.jpg' : null,
           width: targetWidth,
           height: targetHeight,
           sourceWidth: srcW,

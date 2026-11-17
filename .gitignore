@@ -9,7 +9,7 @@ release-assets/
 app-ui/src-tauri/gen/
 
 # Strict block on extra markdown docs, agent plans, and scratchpads
-docs/
+docs/*.md
 PLAN.md
 AGENTS.md
 ARCHITECTURE.md
@@ -24,8 +24,6 @@ tmp/
 *.pcap
 *.pcapng
 test_frames/
-*.jpg
-*.jpeg
 *.raw
 
 # OS & logs
