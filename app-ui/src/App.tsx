@@ -33,11 +33,58 @@ export const App: React.FC = () => {
   const setCleanOutputMode = useStreamStore((s) => s.setCleanOutputMode);
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const [isEdgeToEdge, setIsEdgeToEdge] = useState(false);
 
   useEffect(() => {
     void refreshCameras();
     void pollTelemetry();
   }, [refreshCameras, pollTelemetry]);
+
+  useEffect(() => {
+    let mounted = true;
+    const syncFrame = async () => {
+      try {
+        const w = getCurrentWindow();
+        const [full, max] = await Promise.all([
+          w.isFullscreen ? w.isFullscreen() : Promise.resolve(false),
+          w.isMaximized ? w.isMaximized() : Promise.resolve(false),
+        ]);
+        if (mounted) {
+          setIsEdgeToEdge(Boolean(full || max));
+        }
+      } catch {
+        // Browser preview fallback
+      }
+    };
+    void syncFrame();
+    window.addEventListener('resize', syncFrame);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F11') {
+        e.preventDefault();
+        void (async () => {
+          try {
+            const w = getCurrentWindow();
+            const full = await w.isFullscreen();
+            await w.setFullscreen(!full);
+            if (mounted) {
+              const max = w.isMaximized ? await w.isMaximized() : false;
+              setIsEdgeToEdge(Boolean(!full || max));
+            }
+          } catch {
+            // Browser preview fallback
+          }
+        })();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+
+    return () => {
+      mounted = false;
+      window.removeEventListener('resize', syncFrame);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
 
   useEffect(() => {
     if (!cleanOutputMode) return;
@@ -161,7 +208,7 @@ export const App: React.FC = () => {
 
   return (
     <div
-      className={`app-window-frame ${cleanOutputMode ? 'is-clean-output' : ''}`}
+      className={`app-window-frame${cleanOutputMode ? ' is-clean-output' : ''}${isEdgeToEdge || cleanOutputMode ? ' native-titlebar' : ''}`}
       onContextMenu={(e) => {
         e.preventDefault();
         setContextMenu({ x: e.clientX, y: e.clientY });

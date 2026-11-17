@@ -2,8 +2,33 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../src/App';
+import { WindowControls } from '../src/components/WindowControls';
 import { installBrowserPreviewMocksIfNeeded } from '../src/dev/mockTauri';
 import { useStreamStore } from '../src/state/useStreamStore';
+
+const { winState, mockWindow } = vi.hoisted(() => {
+  const winState = {
+    maximized: false,
+    fullscreen: false,
+  };
+  const mockWindow = {
+    close: vi.fn(async () => {}),
+    minimize: vi.fn(async () => {}),
+    isMaximized: vi.fn(async () => winState.maximized),
+    toggleMaximize: vi.fn(async () => {
+      winState.maximized = !winState.maximized;
+    }),
+    isFullscreen: vi.fn(async () => winState.fullscreen),
+    setFullscreen: vi.fn(async (next: boolean) => {
+      winState.fullscreen = next;
+    }),
+  };
+  return { winState, mockWindow };
+});
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => mockWindow,
+}));
 
 const initialState = useStreamStore.getState();
 
@@ -18,6 +43,9 @@ beforeAll(() => {
 
 afterEach(async () => {
   cleanup();
+  winState.maximized = false;
+  winState.fullscreen = false;
+  vi.clearAllMocks();
   await useStreamStore.getState().disconnectCamera();
   useStreamStore.setState(initialState, true);
 });
@@ -375,5 +403,67 @@ describe('TruongStream Studio UI', () => {
       expect(screen.getByText(/Uncompressed HDMI -> 1080p \(1920×1080 input\)/)).toBeTruthy();
       expect(screen.getByText(/1920×1080 HDMI/)).toBeTruthy();
     });
+  });
+
+  it('renders native Windows caption controls (minimize, maximize/restore, fullscreen, close) and handles Windows layout + F11', async () => {
+    const platformSpy = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('Win32');
+    try {
+      render(<App />);
+
+      await waitFor(() => {
+        expect(document.querySelector('.workspace-titlebar.is-windows')).toBeTruthy();
+      });
+
+      // Windows places caption controls on the far right inside .topbar-right, without macOS traffic lights
+      expect(document.querySelector('.window-controls')).toBeNull();
+      const winControls = document.querySelector('.topbar-right .window-controls-win');
+      expect(winControls).toBeTruthy();
+
+      const minimizeBtn = screen.getByRole('button', { name: 'Minimize window' });
+      const maxBtn = screen.getByRole('button', { name: 'Maximize window' });
+      const fullBtn = screen.getByRole('button', { name: 'Toggle fullscreen' });
+      const closeBtn = screen.getByRole('button', { name: 'Close window' });
+
+      await act(async () => {
+        fireEvent.click(minimizeBtn);
+      });
+      expect(mockWindow.minimize).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.click(maxBtn);
+      });
+      expect(mockWindow.toggleMaximize).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Restore window' })).toBeTruthy();
+      });
+
+      // Restoring via double-clicking titlebar header also toggles maximize state
+      await act(async () => {
+        fireEvent.doubleClick(document.querySelector('.workspace-titlebar')!);
+      });
+      expect(mockWindow.toggleMaximize).toHaveBeenCalledTimes(2);
+
+      // Clicking Fullscreen and pressing F11 both toggle fullscreen mode + edge-to-edge frame
+      await act(async () => {
+        fireEvent.click(fullBtn);
+      });
+      expect(mockWindow.setFullscreen).toHaveBeenCalledWith(true);
+
+      await act(async () => {
+        fireEvent.keyDown(window, { key: 'F11' });
+      });
+      expect(mockWindow.setFullscreen).toHaveBeenCalledWith(false);
+
+      await act(async () => {
+        fireEvent.click(closeBtn);
+      });
+      expect(mockWindow.close).toHaveBeenCalledTimes(1);
+    } finally {
+      platformSpy.mockRestore();
+    }
+
+    cleanup();
+    render(<WindowControls variant="windows" />);
+    expect(document.querySelectorAll('.window-controls-win .win-control-btn').length).toBe(4);
   });
 });

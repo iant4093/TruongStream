@@ -179,6 +179,56 @@ input:focus-visible,
   opacity: 1;
 }
 
+/* Windows 11 caption controls */
+.window-controls-win {
+  display: flex;
+  align-items: stretch;
+  height: 50px;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.win-control-btn {
+  width: 46px;
+  height: 50px;
+  border: none;
+  background: transparent;
+  color: #cfcfcf;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.win-control-btn svg {
+  pointer-events: none;
+}
+
+.win-control-btn:hover {
+  background: #333333;
+  color: #ffffff;
+}
+
+.win-control-btn:active {
+  background: #3d3d3d;
+}
+
+.win-control-btn.is-active-fullscreen {
+  color: #ffffff;
+}
+
+.win-control-btn.is-win-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.win-control-btn.is-win-close:active {
+  background: #b32618;
+  color: #ffffff;
+}
+
 /* Top Bar */
 .workspace-titlebar {
   min-height: 51px;
@@ -190,6 +240,10 @@ input:focus-visible,
   background: var(--surface-main);
   border-bottom: 1px solid #303030;
   flex-shrink: 0;
+}
+
+.workspace-titlebar.is-windows {
+  padding-right: 0;
 }
 
 .topbar-left,

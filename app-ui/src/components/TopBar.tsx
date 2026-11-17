@@ -1,8 +1,9 @@
 import React from 'react';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Camera, Plug, RefreshCw, Unplug, Video } from 'lucide-react';
 import { useStreamStore } from '../state/useStreamStore';
 import { Dropdown } from './Dropdown';
-import { WindowControls } from './WindowControls';
+import { WindowControls, isWindowsPlatform } from './WindowControls';
 
 export const TopBar: React.FC = () => {
   const cameras = useStreamStore((s) => s.cameras);
@@ -33,11 +34,30 @@ export const TopBar: React.FC = () => {
   const cameraOptions = cameras.map(
     (c) => [c.id, `${c.model_name} (${c.usb_speed_mbps} Mbps)`] as const,
   );
+  const isWindows = isWindowsPlatform();
+
+  const handleTitlebarDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
+    const target = e.target as HTMLElement | null;
+    if (
+      target?.closest(
+        'button, select, input, [role="listbox"], [role="combobox"], .window-controls, .window-controls-win',
+      )
+    ) {
+      return;
+    }
+    void getCurrentWindow()
+      .toggleMaximize()
+      .catch(() => {});
+  };
 
   return (
-    <header className="workspace-titlebar" data-tauri-drag-region>
+    <header
+      className={`workspace-titlebar${isWindows ? ' is-windows' : ''}`}
+      data-tauri-drag-region
+      onDoubleClick={handleTitlebarDoubleClick}
+    >
       <div className="topbar-left">
-        <WindowControls />
+        {!isWindows && <WindowControls variant="macos" />}
         <div className="app-brand" data-tauri-drag-region>
           <Camera size={16} strokeWidth={1.7} />
           <span>TruongStream</span>
@@ -101,6 +121,8 @@ export const TopBar: React.FC = () => {
           <Video size={13} />
           <span>{vcamButtonLabel}</span>
         </button>
+
+        {isWindows && <WindowControls variant="windows" />}
       </div>
     </header>
   );
